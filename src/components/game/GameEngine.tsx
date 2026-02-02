@@ -7,21 +7,21 @@ interface GameEngineProps {
   isPaused: boolean;
 }
 
-interface GameObject {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+接口GameObject{
+  x: 数字;
+  y: 数字;
+  width: 数字;
+  高度：number；
   type: 'obstacle' | 'coin' | 'player';
-  color?: string;
+  颜色？：string；
 }
 
 interface PlayerState {
-  x: number;
-  y: number;
-  velocityY: number;
-  isJumping: boolean;
-  lane: number; // 0, 1, 2 for three lanes
+  x: 数字;
+  y: 数字;
+  垂直速度：number；
+  是否在跳跃：boolean；
+  lane: number;// 0, 1, 2 表示三条车道
 }
 
 const GAME_WIDTH = 800;
@@ -33,6 +33,11 @@ const LANES = [GAME_WIDTH / 2 - LANE_WIDTH, GAME_WIDTH / 2, GAME_WIDTH / 2 + LAN
 const GRAVITY = 0.8;
 const JUMP_FORCE = -15;
 const SCROLL_SPEED = 5;
+const MIN_OBSTACLE_GAP = 220;
+const MAX_OBSTACLE_GAP = 380;
+const MIN_COIN_GAP = 180;
+const MAX_COIN_GAP = 320;
+const randGap = (min: number, max: number) => min + Math.random() * (max - min);
 
 const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -41,14 +46,17 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
     score: 0,
     coins: 0,
     distance: 0,
+    timeRemaining: 30, // For level mode: 30 seconds
     obstacles: [] as GameObject[],
     coinObjects: [] as GameObject[],
     scrollSpeed: SCROLL_SPEED,
     gameOver: false,
     levelComplete: false,
+    obstacleCooldown: randGap(MIN_OBSTACLE_GAP, MAX_OBSTACLE_GAP),
+    coinCooldown: randGap(MIN_COIN_GAP, MAX_COIN_GAP),
   });
   
-  const [player, setPlayer] = useState<PlayerState>({
+  const playerRef = useRef<PlayerState>({
     x: LANES[1],
     y: GROUND_Y - PLAYER_SIZE,
     velocityY: 0,
@@ -59,6 +67,47 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
   const [score, setScore] = useState(0);
   const [coins, setCoins] = useState(0);
   const keysPressed = useRef<Set<string>>(new Set());
+  
+  // Touch handling
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (!touchStartRef.current) return;
+    
+    const touch = e.changedTouches[0];
+    const deltaX = touch.clientX - touchStartRef.current.x;
+    const deltaY = touch.clientY - touchStartRef.current.y;
+    
+    // Tap detection (threshold 10px) - Jump
+    if (Math.abs(deltaX) < 10 && Math.abs(deltaY) < 10) {
+       keysPressed.current.add('w');
+       setTimeout(() => keysPressed.current.delete('w'), 150);
+    } else {
+       // Swipe detection
+       if (Math.abs(deltaX) > Math.abs(deltaY)) {
+         // Horizontal swipe
+         if (Math.abs(deltaX) > 30) { 
+            const key = deltaX > 0 ? 'd' : 'a';
+            keysPressed.current.add(key);
+            // Hold enough to change lane (~200ms)
+            setTimeout(() => keysPressed.current.delete(key), 200);
+         }
+       } else {
+         // Vertical swipe
+         if (Math.abs(deltaY) > 30) {
+            const key = deltaY > 0 ? 's' : 'w';
+            keysPressed.current.add(key);
+            setTimeout(() => keysPressed.current.delete(key), 150);
+         }
+       }
+    }
+    touchStartRef.current = null;
+  };
 
   // Handle keyboard input
   useEffect(() => {
@@ -88,33 +137,61 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
       y: GROUND_Y - height,
       width: 40,
       height: height,
-      type: 'obstacle',
-      color: `hsl(${Math.random() * 60 + 300}, 100%, 50%)`, // Magenta range
+      类型: 障碍,
+      颜色: `hsl(${Math.random() * 60 + 300}, 100%, 50%)`, // 品红范围
     };
     gameStateRef.current.obstacles.push(obstacle);
   }, []);
 
-  // Spawn coins
+  // 生成硬币
   const spawnCoin = useCallback(() => {
-    const lane = Math.floor(Math.random() * 3);
-    const yOffset = Math.random() > 0.5 ? 0 : -50; // Some coins in the air
-    const coin: GameObject = {
-      x: GAME_WIDTH + 50 + Math.random() * 200,
-      y: GROUND_Y - 30 + yOffset,
-      width: 25,
-      height: 25,
-      type: 'coin',
+    const yGround = GROUND_Y - 30;
+    const trySpawn = () => {
+      // 3 levels of height: Ground (0), Low Jump (-50), High Jump (-100)
+      // All are physically reachable (Max jump height ~140px)
+      const rand = Math.random();
+      let yOffset = 0;
+      if (rand > 0.66) yOffset = -50;
+      else if (rand > 0.33) yOffset = -100;
+
+      const candidate: GameObject = {
+        x: GAME_WIDTH + 100 + Math.random() * 300,
+        y: yGround + yOffset,
+        width: 25,
+        height: 25,
+        type: 'coin',
+      };
+      
+      // Strict non-overlap check with margin
+      const margin = 20; // 20px buffer ensures no visual overlap
+      const collides = gameStateRef.current.obstacles.some((obs) => {
+        return (
+          candidate.x < obs.x + obs.width + margin &&
+          candidate.x + candidate.width + margin > obs.x &&
+          candidate.y < obs.y + obs.height + margin &&
+          candidate.y + candidate.height + margin > obs.y
+        );
+      });
+      return collides ? null : candidate;
     };
-    gameStateRef.current.coinObjects.push(coin);
+    let result: GameObject | null = null;
+    for (let i = 0; i < 10 && !result; i++) {
+      result = trySpawn();
+    }
+    if (result) {
+      gameStateRef.current.coinObjects.push(result);
+    }
   }, []);
 
   // Check collision
   const checkCollision = (a: GameObject, b: { x: number; y: number; width: number; height: number }) => {
+    // Shrink hitbox slightly to be more forgiving
+    const padding = 5;
     return (
-      a.x < b.x + b.width &&
-      a.x + a.width > b.x &&
-      a.y < b.y + b.height &&
-      a.y + a.height > b.y
+      a.x + padding < b.x + b.width - padding &&
+      a.x + a.width - padding > b.x + padding &&
+      a.y + padding < b.y + b.height - padding &&
+      a.y + a.height - padding > b.y + padding
     );
   };
 
@@ -132,45 +209,46 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
     if (!ctx) return;
 
     const state = gameStateRef.current;
+    const player = playerRef.current;
+
+    // Level difficulty scaling (1-100)
+    // Speed: 5 -> 12
+    const levelMultiplier = Math.min(level, 100);
+    const targetSpeed = 5 + (levelMultiplier - 1) * 0.07;
+    state.scrollSpeed = targetSpeed;
 
     // Update player position based on input
-    setPlayer((prev) => {
-      let newPlayer = { ...prev };
-      
-      // Horizontal movement (A/D)
-      if (keysPressed.current.has('a') || keysPressed.current.has('arrowleft')) {
-        newPlayer.x = Math.max(50, newPlayer.x - 8);
+    // Horizontal movement (A/D)
+    if (keysPressed.current.has('a') || keysPressed.current.has('arrowleft')) {
+      player.x = Math.max(50, player.x - 8);
+    }
+    if (keysPressed.current.has('d') || keysPressed.current.has('arrowright')) {
+      player.x = Math.min(GAME_WIDTH - 50 - PLAYER_SIZE, player.x + 8);
+    }
+    
+    // Jump (W or Space)
+    if ((keysPressed.current.has('w') || keysPressed.current.has(' ') || keysPressed.current.has('arrowup')) && !player.isJumping) {
+      player.velocityY = JUMP_FORCE;
+      player.isJumping = true;
+    }
+    
+    // Crouch/Fast fall (S)
+    if (keysPressed.current.has('s') || keysPressed.current.has('arrowdown')) {
+      if (player.isJumping) {
+        player.velocityY += 2; // Faster fall
       }
-      if (keysPressed.current.has('d') || keysPressed.current.has('arrowright')) {
-        newPlayer.x = Math.min(GAME_WIDTH - 50 - PLAYER_SIZE, newPlayer.x + 8);
-      }
-      
-      // Jump (W or Space)
-      if ((keysPressed.current.has('w') || keysPressed.current.has(' ') || keysPressed.current.has('arrowup')) && !newPlayer.isJumping) {
-        newPlayer.velocityY = JUMP_FORCE;
-        newPlayer.isJumping = true;
-      }
-      
-      // Crouch/Fast fall (S)
-      if (keysPressed.current.has('s') || keysPressed.current.has('arrowdown')) {
-        if (newPlayer.isJumping) {
-          newPlayer.velocityY += 2; // Faster fall
-        }
-      }
-      
-      // Apply gravity
-      newPlayer.velocityY += GRAVITY;
-      newPlayer.y += newPlayer.velocityY;
-      
-      // Ground collision
-      if (newPlayer.y >= GROUND_Y - PLAYER_SIZE) {
-        newPlayer.y = GROUND_Y - PLAYER_SIZE;
-        newPlayer.velocityY = 0;
-        newPlayer.isJumping = false;
-      }
-      
-      return newPlayer;
-    });
+    }
+    
+    // Apply gravity
+    player.velocityY += GRAVITY;
+    player.y += player.velocityY;
+    
+    // Ground collision
+    if (player.y >= GROUND_Y - PLAYER_SIZE) {
+      player.y = GROUND_Y - PLAYER_SIZE;
+      player.velocityY = 0;
+      player.isJumping = false;
+    }
 
     // Update obstacles
     state.obstacles = state.obstacles.filter((obs) => {
@@ -184,9 +262,21 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
       return coin.x > -50;
     });
 
-    // Spawn new obstacles and coins
-    if (Math.random() < 0.02) spawnObstacle();
-    if (Math.random() < 0.03) spawnCoin();
+    // Spawning controlled by gap cooldowns
+    // Adjust gap based on level: Higher level = smaller gaps
+    // Gap factor: 1.0 (Lvl 1) -> 0.6 (Lvl 100)
+    const gapFactor = Math.max(0.6, 1 - (levelMultiplier - 1) * 0.004);
+    
+    state.obstacleCooldown -= state.scrollSpeed;
+    if (state.obstacleCooldown <= 0) {
+      spawnObstacle();
+      state.obstacleCooldown = randGap(MIN_OBSTACLE_GAP * gapFactor, MAX_OBSTACLE_GAP * gapFactor);
+    }
+    state.coinCooldown -= state.scrollSpeed;
+    if (state.coinCooldown <= 0) {
+      spawnCoin();
+      state.coinCooldown = randGap(MIN_COIN_GAP, MAX_COIN_GAP);
+    }
 
     // Check collisions
     const playerHitbox = {
@@ -219,21 +309,20 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
 
     // Update score
     state.distance += state.scrollSpeed;
+    // Score based on distance + coins
     state.score = Math.floor(state.distance / 10) + state.coins * 100;
     setScore(state.score);
 
-    // Level mode: check completion
+    // Level mode: check completion (Time based: 60 seconds)
     if (mode === 'level') {
-      const levelDistance = level * 1000; // Each level is longer
-      if (state.distance >= levelDistance) {
+      // timeRemaining is in seconds
+      state.timeRemaining -= 1 / 60; // Approx 60 FPS
+      if (state.timeRemaining <= 0) {
         state.levelComplete = true;
         onGameEnd(state.score, state.coins, true);
         return;
       }
     }
-
-    // Increase difficulty over time
-    state.scrollSpeed = SCROLL_SPEED + Math.floor(state.distance / 2000) * 0.5;
 
     // Clear and draw
     ctx.fillStyle = 'hsl(222, 47%, 5%)';
@@ -330,7 +419,7 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
     ctx.fillRect(px + PLAYER_SIZE * 0.2, py + PLAYER_SIZE * 0.2, PLAYER_SIZE * 0.6, PLAYER_SIZE * 0.15);
 
     animationRef.current = requestAnimationFrame(gameLoop);
-  }, [isPaused, player, mode, level, onGameEnd, spawnObstacle, spawnCoin]);
+  }, [isPaused, mode, level, onGameEnd, spawnObstacle, spawnCoin]);
 
   // Start game loop
   useEffect(() => {
@@ -342,9 +431,13 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
     };
   }, [gameLoop]);
 
-  return (
-    <div className="relative">
-      {/* Score and coins display */}
+  返回 (
+    <div 
+      className="relative w-full max-w-[800px] mx-auto touch-none select-none"
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+    >
+      {/* 分数和金币显示 */}
       <div className="absolute top-4 left-4 z-10 flex items-center gap-6">
         <div className="flex items-center gap-2 px-4 py-2 rounded-lg bg-card/80 border border-neon-cyan/50">
           <span className="font-display text-neon-cyan text-sm">分数</span>
@@ -356,16 +449,21 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
         </div>
       </div>
 
-      {/* Level indicator for level mode */}
+      {/* 关卡指示器，用于关卡模式 */}
       {mode === 'level' && (
-        <div className="absolute top-4 right-4 z-10">
+        <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 items-end">
           <div className="px-4 py-2 rounded-lg bg-card/80 border border-neon-magenta/50">
             <span className="font-display text-neon-magenta">关卡 {level}</span>
+          </div>
+          <div className="px-4 py-2 rounded-lg bg-card/80 border border-neon-cyan/50">
+            <span className="font-display text-neon-cyan">
+              ⏱️ {Math.max(0, Math.ceil(gameStateRef.current.timeRemaining))}s
+            </span>
           </div>
         </div>
       )}
 
-      {/* Controls hint */}
+      {/* 控制提示 */}
       <div className="absolute bottom-4 left-4 z-10 text-xs text-muted-foreground font-game">
         <span className="px-2 py-1 rounded bg-muted mr-1">W</span> 跳跃
         <span className="px-2 py-1 rounded bg-muted mx-1">A</span>
@@ -377,10 +475,10 @@ const GameEngine = ({ mode, level = 1, onGameEnd, isPaused }: GameEngineProps) =
         ref={canvasRef}
         width={GAME_WIDTH}
         height={GAME_HEIGHT}
-        className="rounded-xl border-2 border-neon-cyan/30 shadow-[0_0_30px_hsl(180_100%_50%/0.2)]"
+        className="block w-full h-auto rounded-xl border-2 border-neon-cyan/30 shadow-[0_0_30px_hsl(180_100%_50%/0.2)]"
       />
     </div>
   );
 };
 
-export default GameEngine;
+导出 默认游戏引擎;
