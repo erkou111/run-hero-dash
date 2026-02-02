@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import GameModal from '../GameModal';
 import { Infinity, Layers, Trophy, Sparkles, Users } from 'lucide-react';
 
@@ -15,6 +16,7 @@ const modes = [
     icon: Infinity,
     color: 'cyan',
     available: true,
+    route: '/game/endless',
   },
   {
     id: 'level',
@@ -23,6 +25,7 @@ const modes = [
     icon: Layers,
     color: 'magenta',
     available: true,
+    route: '/game/level',
   },
   {
     id: 'ranked',
@@ -31,6 +34,7 @@ const modes = [
     icon: Trophy,
     color: 'gold',
     available: true,
+    route: '/game/ranked',
   },
   {
     id: 'other',
@@ -39,6 +43,7 @@ const modes = [
     icon: Sparkles,
     color: 'purple',
     available: false,
+    route: '',
   },
 ];
 
@@ -57,6 +62,7 @@ const iconColorMap = {
 };
 
 const GameModeModal = ({ isOpen, onClose }: GameModeModalProps) => {
+  const navigate = useNavigate();
   const [selectedMode, setSelectedMode] = useState<string | null>(null);
   const [rankedTeamSize, setRankedTeamSize] = useState(1);
 
@@ -66,8 +72,14 @@ const GameModeModal = ({ isOpen, onClose }: GameModeModalProps) => {
   };
 
   const handleStart = () => {
-    // Handle game start
-    console.log('Starting game:', selectedMode, rankedTeamSize);
+    const mode = modes.find((m) => m.id === selectedMode);
+    if (!mode || !mode.route) return;
+    
+    if (selectedMode === 'ranked') {
+      navigate(`${mode.route}?team=${rankedTeamSize}`);
+    } else {
+      navigate(mode.route);
+    }
     onClose();
   };
 
